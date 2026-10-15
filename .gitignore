@@ -3,3 +3,5 @@ node_modules/
 .DS_Store
 # Original user reference is retained locally; only the clean seabed is deployed.
 assets/mediterranean.png
+.local-tools/
+.media-source/
