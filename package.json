@@ -3,5 +3,5 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "scripts": { "dev": "node server.mjs", "check": "node --check water.js && node --check server.mjs" }
+  "scripts": { "dev": "node server.mjs", "check": "node --check water.js && node --check ocean.js && node --check server.mjs" }
 }
