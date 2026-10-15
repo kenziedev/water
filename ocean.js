@@ -37,7 +37,7 @@ vec3 sea(vec2 p) {
     float packetPhase = dot(p, crossDirection) * .37 - time * .055 + fi;
     float packet = .65 + .35 * sin(packetPhase);
     vec2 packetGradient = crossDirection * .1295 * cos(packetPhase);
-    float amplitude = .044 / frequency * pow(.973, fi);
+    float amplitude = .105 / frequency * pow(.973, fi);
     slope += amplitude * (packet * phaseGradient * cos(phase)
                          + packetGradient * sin(phase));
     // Use only the large waves for soft illumination below the surface.
@@ -50,7 +50,7 @@ vec3 sea(vec2 p) {
 vec3 sky(vec3 ray) {
   float elevation = clamp(ray.z, 0.0, 1.0);
   // Soft clear-sky illumination, without high-contrast procedural cloud masks.
-  return mix(vec3(.55, .68, .76), vec3(.24, .43, .60), pow(elevation, .6));
+  return mix(vec3(.69, .79, .85), vec3(.16, .34, .52), pow(elevation, .65));
 }
 
 void main() {
@@ -71,23 +71,25 @@ void main() {
   p /= 1.0 + uv.y * .28;
   vec3 wave = sea(p);
   vec3 normal = normalize(vec3(-wave.xy, 1.0));
-  vec3 view = normalize(vec3((uv.x - .5) * .12, -.85 - uv.y * 1.0, 1.0));
+  vec3 view = normalize(vec3((uv.x - .5) * .12, -1.10 - uv.y * 1.05, 1.0));
   vec3 reflected = reflect(-view, normal);
   float facing = max(dot(normal, view), 0.0);
   float fresnel = .0204 + .9796 * pow(1.0 - facing, 5.0);
 
   // Moving caustic illumination changes brightness, never the rock geometry.
-  float lightFocus = clamp(-wave.z * .025, -.025, .035);
+  float lightFocus = clamp(-wave.z * .055, -.075, .10);
   vec3 transmitted = bottom * (1.0 + lightFocus * (1.0 - uv.y * .4));
   vec3 reflection = sky(reflected);
-  // Mix in linear light. Unamplified water Fresnel avoids opaque white bands.
-  vec3 color = mix(pow(transmitted, vec3(2.2)), pow(reflection, vec3(2.2)), fresnel);
+  // Mix in linear light, gently compressing rare grazing-angle peaks so a
+  // small steep ripple cannot become an opaque pale patch over the rocks.
+  float reflectedEnergy = fresnel / (1.0 + .9 * fresnel);
+  vec3 color = mix(pow(transmitted, vec3(2.2)), pow(reflection, vec3(2.2)), reflectedEnergy);
 
   // Restrained specular points, with no broad artificial glow.
   vec3 sun = normalize(vec3(-.32, .67, .72));
   float alignment = max(dot(reflected, sun), 0.0);
-  float glint = pow(alignment, 1800.0);
-  color += vec3(1.0, .98, .89) * glint * .055;
+  float glint = pow(alignment, 1400.0);
+  color += vec3(1.0, .98, .89) * glint * .085;
   gl_FragColor = vec4(pow(max(color, vec3(0.0)), vec3(1.0 / 2.2)), 1.0);
 }
 `;

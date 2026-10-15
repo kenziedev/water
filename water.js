@@ -1,4 +1,4 @@
-import { vertex, fragment } from './ocean.js';
+import { vertex, fragment } from './ocean.js?v=visible-waves-3';
 const canvas = document.querySelector('#water');
 const gl = canvas.getContext('webgl', { antialias: false, alpha: false });
 const notice = document.querySelector('#notice');
