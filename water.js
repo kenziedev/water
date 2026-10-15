@@ -11,7 +11,7 @@ const time = { value: 0 };
 // frame. The CSS crop and expanded FOV preserve the visible 45 degree lens.
 const overscan = 1.4;
 let paused = matchMedia('(prefers-reduced-motion: reduce)').matches;
-let renderer, camera, controls, scene, needsDraw = true, contextLost = false;
+let renderer, camera, controls, scene, ocean, needsDraw = true, contextLost = false;
 let lastFrame = 0;
 
 function notify(message) {
@@ -55,7 +55,7 @@ async function init() {
   createEnvironment(sunPosition);
 
   scene.add(new THREE.HemisphereLight(0xc3e4f5, 0x6b7665, 1.1));
-  const sunlight = new THREE.DirectionalLight(0xfff4df, 2);
+  const sunlight = new THREE.DirectionalLight(0xfff4df, 1.7);
   sunlight.position.copy(sunPosition).multiplyScalar(22);
   sunlight.castShadow = true;
   sunlight.shadow.mapSize.set(2048, 2048);
@@ -69,7 +69,9 @@ async function init() {
   bedTexture.colorSpace = THREE.SRGBColorSpace;
   bedTexture.anisotropy = Math.min(8, renderer.capabilities.getMaxAnisotropy());
   scene.add(createSeabed(THREE, bedTexture, time));
-  scene.add(createOcean(THREE, time));
+  ocean = createOcean(THREE, renderer, time);
+  ocean.material.envMap = environment.texture;
+  scene.add(ocean);
   resize();
   renderer.compile(scene, camera);
   renderer.setAnimationLoop(frame);
@@ -92,6 +94,10 @@ function createEnvironment(sunPosition = new THREE.Vector3(-.45, .78, -.43).norm
   environment = pmrem.fromScene(environmentScene, .04, .1, 2000);
   scene.environment = environment.texture;
   scene.environmentIntensity = .16;
+  if (ocean) {
+    ocean.material.envMap = environment.texture;
+    ocean.material.needsUpdate = true;
+  }
   pmrem.dispose();
   sky.geometry.dispose();
   sky.material.dispose();
@@ -114,12 +120,15 @@ function resize() {
 }
 
 function frame(now) {
-  const dt = Math.min((now - lastFrame) / 1000 || 0, .05);
+  const dt = Math.min((now - lastFrame) / 1000 || 0, .1);
   lastFrame = now;
   if (document.hidden || contextLost) return;
   controls.update();
   if (paused && !needsDraw) return;
   if (!paused) time.value += dt;
+  // Compute the spectrum once on a small GPU surface, then sample it from
+  // both the displaced mesh and optical shading at every viewing angle.
+  ocean.userData.updateWaves();
   renderer.render(scene, camera);
   needsDraw = false;
 }

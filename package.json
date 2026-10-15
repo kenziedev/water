@@ -7,7 +7,7 @@
     "predev": "npm run build",
     "dev": "node server.mjs",
     "build": "esbuild water.js --bundle --format=esm --minify --outfile=app.js",
-    "check": "node --check water.js && node --check ocean.js && node --check seabed.js && node --check server.mjs"
+    "check": "node --check water.js && node --check ocean.js && node --check wave-field.js && node --check seabed.js && node --check server.mjs"
   },
   "dependencies": {
     "three": "^0.186.1"
