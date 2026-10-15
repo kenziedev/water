@@ -1,0 +1,15 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#245b64"><meta name="description" content="맑고 깊은 지중해의 물결을 바라보는 시간.">
+<title>물멍</title><link rel="stylesheet" href="./style.css">
+</head><body>
+<canvas id="water" aria-label="깊고 투명한 청록빛 바다의 움직이는 수면"></canvas>
+<nav class="controls" aria-label="물멍 조작">
+<button id="sound" aria-label="물소리 켜기" aria-pressed="false" title="물소리"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11 5 6 9H3v6h3l5 4Z"/><path class="sound-waves" d="M15 8c3 2 3 6 0 8m3-11c5 4 5 10 0 14"/><path class="sound-muted" d="m16 9 5 6m0-6-5 6"/></svg></button>
+<button id="pause" aria-label="물결 일시정지" title="일시정지"><svg viewBox="0 0 24 24" aria-hidden="true"><path id="pause-path" d="M9 5v14M15 5v14"/></svg></button>
+<button id="fullscreen" aria-label="전체 화면" title="전체 화면"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 3H3v5m13-5h5v5M3 16v5h5m13-5v5h-5"/></svg></button>
+</nav><div id="notice" role="status" hidden></div>
+<script type="module" src="./water.js"></script>
+</body></html>
