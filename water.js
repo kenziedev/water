@@ -47,5 +47,3 @@ function createWaterAudio(){
 }
 document.querySelector('#sound').addEventListener('click',async()=>{try{if(!audio)createWaterAudio();await audio.resume();soundOn=!soundOn;audioGain.gain.setTargetAtTime(soundOn?.42:0,audio.currentTime,.5);const button=document.querySelector('#sound');button.setAttribute('aria-pressed',String(soundOn));button.setAttribute('aria-label',soundOn?'물소리 끄기':'물소리 켜기');}catch{notify('이 브라우저에서는 물소리를 재생할 수 없어요.');}});
 document.addEventListener('visibilitychange',()=>{if(audio){if(document.hidden)audio.suspend();else if(soundOn)audio.resume().catch(()=>{});}});
-
-
