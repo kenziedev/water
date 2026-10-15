@@ -1,95 +1,78 @@
-export const vertex = `
-attribute vec2 position;
-void main() { gl_Position = vec4(position, 0.0, 1.0); }
-`;
-
-export const fragment = `
-precision highp float;
-uniform vec2 resolution;
-uniform vec2 imageSize;
-uniform float time;
-uniform sampler2D bed;
-
-float hash(vec2 p) {
-  return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
+// World-space waves: geometry, normals and refraction share one surface.
+// The seabed never receives a time-dependent transformation.
+const surfaceGLSL = /* glsl */ `
+uniform float waterTime;
+void swell(vec2 p, vec2 direction, float wavelength, float amplitude, float offset,
+           inout vec3 displacement, inout vec3 tangentX, inout vec3 tangentZ) {
+  vec2 d = normalize(direction);
+  float k = 6.28318530718 / wavelength;
+  float phase = k * dot(d, p) - sqrt(9.81 * k) * waterTime * .66 + offset;
+  float s = sin(phase), c = cos(phase);
+  float horizontal = .36 * amplitude;
+  displacement += vec3(horizontal * d.x * c, amplitude * s, horizontal * d.y * c);
+  tangentX += vec3(-horizontal * k * d.x * d.x * s,
+                   amplitude * k * d.x * c,
+                  -horizontal * k * d.x * d.y * s);
+  tangentZ += vec3(-horizontal * k * d.x * d.y * s,
+                   amplitude * k * d.y * c,
+                  -horizontal * k * d.y * d.y * s);
 }
-// A broad, irregular spectrum of short waves. No single large sine wave or
-// doubled crest harmonic dominates the surface and creates diagonal stripes.
-// Wave packets fade smoothly in space; their derivatives are analytic.
-// Returns the surface slope and a restrained lighting term, never bed offsets.
-vec3 sea(vec2 p) {
-  vec2 slope = vec2(0.0);
-  float curvature = 0.0;
-  for (int i = 0; i < 24; i++) {
-    float fi = float(i);
-    float seed = hash(vec2(fi, 9.73));
-    float angle = fi * 2.399963 + .28 * sin(fi * 5.17);
-    vec2 direction = vec2(cos(angle), sin(angle));
-    vec2 crossDirection = vec2(-direction.y, direction.x);
-    float frequency = 3.0 * pow(1.135, fi) * (.85 + seed * .3);
-    float crossPhase = dot(p, crossDirection) * (.45 + seed * .3)
-                     + time * .08 + fi * 3.17;
-    float phase = dot(p, direction) * frequency
-                - sqrt(9.81 * frequency) * time * .34 + fi * 7.13
-                + .85 * sin(crossPhase);
-    vec2 phaseGradient = direction * frequency
-                       + crossDirection * .85 * (.45 + seed * .3) * cos(crossPhase);
-    float packetPhase = dot(p, crossDirection) * .37 - time * .055 + fi;
-    float packet = .65 + .35 * sin(packetPhase);
-    vec2 packetGradient = crossDirection * .1295 * cos(packetPhase);
-    float amplitude = .105 / frequency * pow(.973, fi);
-    slope += amplitude * (packet * phaseGradient * cos(phase)
-                         + packetGradient * sin(phase));
-    // Use only the large waves for soft illumination below the surface.
-    // High-frequency curvature made the old bed flash like a moving lattice.
-    if (i < 7) curvature -= amplitude * frequency * frequency * sin(phase) * packet;
-  }
-  return vec3(slope, curvature);
-}
-
-vec3 sky(vec3 ray) {
-  float elevation = clamp(ray.z, 0.0, 1.0);
-  // Soft clear-sky illumination, without high-contrast procedural cloud masks.
-  return mix(vec3(.69, .79, .85), vec3(.16, .34, .52), pow(elevation, .65));
-}
-
-void main() {
-  vec2 uv = gl_FragCoord.xy / resolution;
-  float aspect = resolution.x / resolution.y;
-  vec2 cover = vec2(1.0);
-  float imageAspect = imageSize.x / imageSize.y;
-  if (aspect > imageAspect) cover.y = imageAspect / aspect;
-  else cover.x = aspect / imageAspect;
-
-  // Stationary bed: intentionally no time, wave slope, displacement or camera
-  // motion in this texture lookup. Every rock occupies the same screen pixels.
-  vec2 bedUV = (uv - .5) * cover + .5;
-  vec3 bottom = texture2D(bed, bedUV).rgb;
-
-  // Perspective compresses the more distant waves at the top of the frame.
-  vec2 p = vec2((uv.x - .5) * aspect, uv.y * 1.35) * 11.0;
-  p /= 1.0 + uv.y * .28;
-  vec3 wave = sea(p);
-  vec3 normal = normalize(vec3(-wave.xy, 1.0));
-  vec3 view = normalize(vec3((uv.x - .5) * .12, -1.10 - uv.y * 1.05, 1.0));
-  vec3 reflected = reflect(-view, normal);
-  float facing = max(dot(normal, view), 0.0);
-  float fresnel = .0204 + .9796 * pow(1.0 - facing, 5.0);
-
-  // Moving caustic illumination changes brightness, never the rock geometry.
-  float lightFocus = clamp(-wave.z * .055, -.075, .10);
-  vec3 transmitted = bottom * (1.0 + lightFocus * (1.0 - uv.y * .4));
-  vec3 reflection = sky(reflected);
-  // Mix in linear light, gently compressing rare grazing-angle peaks so a
-  // small steep ripple cannot become an opaque pale patch over the rocks.
-  float reflectedEnergy = fresnel / (1.0 + .9 * fresnel);
-  vec3 color = mix(pow(transmitted, vec3(2.2)), pow(reflection, vec3(2.2)), reflectedEnergy);
-
-  // Restrained specular points, with no broad artificial glow.
-  vec3 sun = normalize(vec3(-.32, .67, .72));
-  float alignment = max(dot(reflected, sun), 0.0);
-  float glint = pow(alignment, 1400.0);
-  color += vec3(1.0, .98, .89) * glint * .085;
-  gl_FragColor = vec4(pow(max(color, vec3(0.0)), vec3(1.0 / 2.2)), 1.0);
+void waterSurface(vec2 p, out vec3 displacement, out vec3 surfaceNormal) {
+  displacement = vec3(0.0);
+  vec3 tangentX = vec3(1.0, 0.0, 0.0);
+  vec3 tangentZ = vec3(0.0, 0.0, 1.0);
+  swell(p, vec2(.91, .42), 7.10, .155, .70, displacement, tangentX, tangentZ);
+  swell(p, vec2(.76, .65), 4.80, .085, 2.10, displacement, tangentX, tangentZ);
+  swell(p, vec2(.99, -.12), 3.20, .046, 4.60, displacement, tangentX, tangentZ);
+  swell(p, vec2(-.28, .96), 2.15, .026, 1.20, displacement, tangentX, tangentZ);
+  swell(p, vec2(.65, .76), 1.35, .012, 3.80, displacement, tangentX, tangentZ);
+  swell(p, vec2(.95, .31), .86, .005, 5.40, displacement, tangentX, tangentZ);
+  #ifdef WATER_FRAGMENT
+    swell(p, vec2(.83, .55), .62, .0038, 2.7, displacement, tangentX, tangentZ);
+    swell(p, vec2(.96, -.25), .39, .0024, 1.3, displacement, tangentX, tangentZ);
+    swell(p, vec2(.56, .82), .24, .0012, 4.8, displacement, tangentX, tangentZ);
+    swell(p, vec2(-.16, .98), .17, .0007, 3.4, displacement, tangentX, tangentZ);
+  #endif
+  surfaceNormal = normalize(cross(tangentZ, tangentX));
 }
 `;
+
+export function createOcean(THREE, timeUniform) {
+  const geometry = new THREE.PlaneGeometry(64, 64, 320, 320);
+  geometry.rotateX(-Math.PI / 2);
+  const material = new THREE.MeshPhysicalMaterial({
+    color: 0xe5f5ef, metalness: 0, roughness: .065,
+    transmission: 1, ior: 1.333, thickness: 3.4,
+    attenuationColor: 0x4fc5bd, attenuationDistance: 7.5,
+    envMapIntensity: .16,
+  });
+  material.onBeforeCompile = shader => {
+    shader.uniforms.waterTime = timeUniform;
+    shader.vertexShader = 'varying vec2 waterPoint;\n' + surfaceGLSL + shader.vertexShader;
+    shader.fragmentShader = '#define WATER_FRAGMENT\nvarying vec2 waterPoint;\n' + surfaceGLSL + shader.fragmentShader;
+    shader.vertexShader = shader.vertexShader.replace(
+      '#include <beginnormal_vertex>',
+      `vec3 waterOffset, waterNormal;
+       waterSurface(position.xz, waterOffset, waterNormal);
+       vec3 objectNormal = waterNormal;
+       #ifdef USE_TANGENT
+         vec3 objectTangent = vec3(tangent.xyz);
+       #endif`,
+    );
+    shader.vertexShader = shader.vertexShader.replace(
+      '#include <begin_vertex>', 'vec3 transformed = position + waterOffset; waterPoint = position.xz;',
+    );
+    shader.fragmentShader = shader.fragmentShader.replace(
+      '#include <normal_fragment_maps>',
+      `#include <normal_fragment_maps>
+       vec3 detailDisplacement, detailNormal;
+       waterSurface(waterPoint, detailDisplacement, detailNormal);
+       normal = normalize(mat3(viewMatrix) * detailNormal);`,
+    );
+  };
+  material.customProgramCacheKey = () => 'gerstner-sea-v1';
+  const water = new THREE.Mesh(geometry, material);
+  water.name = 'Moving sea surface';
+  water.frustumCulled = false;
+  return water;
+}

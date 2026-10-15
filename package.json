@@ -3,5 +3,16 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "scripts": { "dev": "node server.mjs", "check": "node --check water.js && node --check ocean.js && node --check server.mjs" }
+  "scripts": {
+    "predev": "npm run build",
+    "dev": "node server.mjs",
+    "build": "esbuild water.js --bundle --format=esm --minify --outfile=app.js",
+    "check": "node --check water.js && node --check ocean.js && node --check seabed.js && node --check server.mjs"
+  },
+  "dependencies": {
+    "three": "^0.186.1"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.2"
+  }
 }

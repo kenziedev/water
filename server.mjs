@@ -1,6 +1,6 @@
 import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
-const files = new Map([['index.html','text/html; charset=utf-8'],['style.css','text/css; charset=utf-8'],['water.js','text/javascript; charset=utf-8'],['ocean.js','text/javascript; charset=utf-8'],['assets/seabed.png','image/png']]);
+const files = new Map([['index.html','text/html; charset=utf-8'],['style.css','text/css; charset=utf-8'],['app.js','text/javascript; charset=utf-8'],['THIRD_PARTY_LICENSES.txt','text/plain; charset=utf-8'],['assets/seabed.png','image/png']]);
 createServer(async (request,response) => {
   const path = new URL(request.url,'http://localhost').pathname;
   if(path === '/water') { response.writeHead(302,{Location:'/water/'}); response.end(); return; }
