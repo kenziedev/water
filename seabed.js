@@ -74,6 +74,16 @@ export function createSeabed(THREE, bedTexture, timeUniform, caustics = null) {
   }
 
   const transform = new THREE.Object3D();
+  const rockObstacles = [], pebbleObstacles = [];
+  const recordObstacle = (geometry, destination) => {
+    if (!geometry.boundingBox) geometry.computeBoundingBox();
+    const bounds = geometry.boundingBox.clone().applyMatrix4(transform.matrix);
+    destination.push(Object.freeze({
+      minX: bounds.min.x, maxX: bounds.max.x,
+      minY: bounds.min.y, maxY: bounds.max.y,
+      minZ: bounds.min.z, maxZ: bounds.max.z,
+    }));
+  };
   const stoneColor = new THREE.Color();
   const warmStone = new THREE.Color('#dbd5c3');
   const coolStone = new THREE.Color('#a5b1ac');
@@ -91,6 +101,7 @@ export function createSeabed(THREE, bedTexture, timeUniform, caustics = null) {
       transform.scale.set(stone.sx, stone.sy, stone.sz);
       transform.updateMatrix();
       instances.setMatrixAt(index, transform.matrix);
+      recordObstacle(geometry, rockObstacles);
       stoneColor.copy(warmStone).lerp(coolStone, random() * .72);
       stoneColor.multiplyScalar(.87 + random() * .19);
       instances.setColorAt(index, stoneColor);
@@ -119,6 +130,7 @@ export function createSeabed(THREE, bedTexture, timeUniform, caustics = null) {
     transform.scale.set(size * (1 + random() * .7), size * (.4 + random() * .4), size);
     transform.updateMatrix();
     rubble.setMatrixAt(index, transform.matrix);
+    recordObstacle(rubble.geometry, pebbleObstacles);
     stoneColor.copy(warmStone).lerp(coolStone, random() * .85);
     stoneColor.multiplyScalar(.8 + random() * .25);
     rubble.setColorAt(index, stoneColor);
@@ -131,6 +143,10 @@ export function createSeabed(THREE, bedTexture, timeUniform, caustics = null) {
   group.userData.rockCount = stones.length;
   group.userData.pebbleCount = rubbleCount;
   group.userData.groundHeight = groundHeight;
+  // Conservative bounds of the actual transformed geometry, used by rooted
+  // vegetation and swimming routes without changing the static seabed.
+  group.userData.rockObstacles = Object.freeze(rockObstacles);
+  group.userData.pebbleObstacles = Object.freeze(pebbleObstacles);
   group.userData.setCaustics = nextCaustics => {
     const uniforms = nextCaustics?.receiverUniforms ?? null;
     groundMaterial.userData.setCaustics(uniforms);

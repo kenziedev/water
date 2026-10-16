@@ -1,9 +1,8 @@
 // A gentle focusing estimate from the same normals used by the water surface.
 // The field lives on a horizontal receiver plane; materials project it onto
 // their own fixed world positions without moving geometry or texture detail.
-export function createCaustics(THREE, renderer, field, timeUniform, sunDirection, { resolution = 256 } = {}) {
+export function createCaustics(THREE, renderer, field, timeUniform, sunDirection, { resolution = 256, strength = .30 } = {}) {
   const referenceDepth = 3.5;
-  const strength = .58;
   const sunlight = sunDirection.clone().normalize();
   // Snell's law through the mean horizontal surface. RayOffset is horizontal
   // travel per metre DOWN, hence its positive denominator and the PLUS sign

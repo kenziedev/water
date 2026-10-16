@@ -1,5 +1,8 @@
 import * as THREE from 'three';
-import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { createCameraRig } from './camera-rig.js';
+import { createEcology } from './ecology.js';
+import { createQualityController, qualitySettings } from './quality.js';
+import { createWaterAudio } from './water-audio.js';
 import { Sky } from 'three/addons/objects/Sky.js';
 import { createOcean } from './ocean.js';
 import { createSeabed } from './seabed.js';
@@ -9,23 +12,23 @@ import { createCaustics } from './caustics.js';
 const canvas = document.querySelector('#water');
 const notice = document.querySelector('#notice');
 const time = { value: 0 };
+const waterTime = { value: 0 };
+const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)');
+const mobile = matchMedia('(pointer: coarse)').matches;
+const adaptiveQuality = createQualityController({ mobile });
+let motion = 'calm';
+let waterSpeed = .35;
 // Extra rendered margins give refracted rays real scenery outside the visible
 // frame. The CSS crop and expanded FOV preserve the visible 45 degree lens.
 const overscan = 1.18;
-let paused = matchMedia('(prefers-reduced-motion: reduce)').matches;
-let renderer, camera, controls, scene, ocean, underwater, caustics, needsDraw = true, contextLost = false;
+let paused = reducedMotion.matches;
+let renderer, camera, controls, scene, ocean, underwater, caustics, ecology, needsDraw = true, contextLost = false;
 let lastFrame = 0;
 let quality = 'auto';
 const drawingSize = new THREE.Vector2();
 const localInspection = ['localhost', '127.0.0.1'].includes(location.hostname)
   && new URLSearchParams(location.search).has('inspect');
 
-function qualitySettings() {
-  const mobile = matchMedia('(pointer: coarse)').matches;
-  if (quality === 'high') return { pixels: 5000000, dpr: 1.75, refraction: 1 };
-  if (quality === 'eco') return { pixels: 1100000, dpr: 1, refraction: .75 };
-  return { pixels: mobile ? 1400000 : 2800000, dpr: mobile ? 1.4 : 1.5, refraction: mobile ? .85 : 1 };
-}
 
 function notify(message) {
   notice.textContent = message;
@@ -48,20 +51,9 @@ async function init() {
   scene.background = new THREE.Color(0x82b6c5);
   camera = new THREE.PerspectiveCamera(45, 1, .1, 160);
   camera.position.set(0, 6.5, 8.5);
-  controls = new OrbitControls(camera, canvas);
-  controls.target.set(0, -.8, 0);
-  controls.enableDamping = true;
-  controls.dampingFactor = .07;
-  controls.enablePan = false;
-  controls.rotateSpeed = .48;
-  controls.zoomSpeed = .7;
-  controls.minDistance = 6;
-  controls.maxDistance = 14;
-  controls.minPolarAngle = .12;
-  controls.maxPolarAngle = .90;
-  controls.update();
-  controls.saveState();
-  controls.addEventListener('change', () => { needsDraw = true; });
+  controls = createCameraRig(THREE, camera, canvas, {
+    onChange: () => { needsDraw = true; }, reducedMotion: reducedMotion.matches,
+  });
 
   const sunPosition = new THREE.Vector3(-.45, .78, -.43).normalize();
   createEnvironment(sunPosition);
@@ -81,9 +73,14 @@ async function init() {
   bedTexture.colorSpace = THREE.SRGBColorSpace;
   bedTexture.anisotropy = Math.min(8, renderer.capabilities.getMaxAnisotropy());
   underwater = createUnderwater(THREE, renderer);
-  ocean = createOcean(THREE, renderer, time, underwater.uniforms);
-  caustics = createCaustics(THREE, renderer, ocean.userData.waveField, time, sunPosition);
-  scene.add(createSeabed(THREE, bedTexture, time, caustics));
+  ocean = createOcean(THREE, renderer, waterTime, underwater.uniforms);
+  caustics = createCaustics(THREE, renderer, ocean.userData.waveField, waterTime, sunPosition);
+  const seabed = createSeabed(THREE, bedTexture, time, caustics);
+  scene.add(seabed);
+  ecology = createEcology(THREE, seabed, time, { caustics });
+  scene.add(ecology.group);
+  ecology.update(0);
+  setMotion(motion);
   ocean.material.envMap = environment.texture;
   scene.add(ocean);
   resize();
@@ -122,7 +119,7 @@ function createEnvironment(sunPosition = new THREE.Vector3(-.45, .78, -.43).norm
 function resize() {
   if (!renderer || !camera) return;
   const width = Math.ceil(innerWidth * overscan), height = Math.ceil(innerHeight * overscan);
-  const settings = qualitySettings();
+  const settings = qualitySettings(quality, adaptiveQuality.tier, mobile);
   // Budget visible pixels, not the cropped-off guard band. A 1080p desktop
   // therefore keeps native detail while retina/mobile have bounded costs.
   const ratio = Math.min(devicePixelRatio || 1, settings.dpr, Math.sqrt(settings.pixels / (innerWidth * innerHeight)));
@@ -136,16 +133,24 @@ function resize() {
   camera.updateProjectionMatrix();
   renderer.getDrawingBufferSize(drawingSize);
   underwater?.resize(drawingSize.x, drawingSize.y, settings.refraction);
+  ecology?.setQuality(settings.ecology);
   needsDraw = true;
 }
 
 function frame(now) {
-  const dt = Math.min((now - lastFrame) / 1000 || 0, .1);
+  const elapsed = lastFrame ? (now - lastFrame) / 1000 : 0;
+  const dt = Math.min(elapsed, .1);
   lastFrame = now;
   if (document.hidden || contextLost) return;
-  controls.update();
+  controls.update(dt);
   if (paused && !needsDraw) return;
-  if (!paused) time.value += dt;
+  if (!paused) {
+    time.value += dt;
+    waterSpeed += ((motion === 'calm' ? .35 : .7) - waterSpeed) * (1 - Math.exp(-dt / 1.5));
+    waterTime.value += dt * waterSpeed;
+    if (quality === 'auto' && adaptiveQuality.sample(elapsed)) resize();
+  }
+  ecology.update(paused ? 0 : dt);
   renderer.info.reset();
   // Compute the spectrum once on a small GPU surface, then sample it from
   // both the displaced mesh and optical shading at every viewing angle.
@@ -173,6 +178,8 @@ canvas.addEventListener('webglcontextrestored', () => {
   caustics?.invalidate();
   renderer.shadowMap.needsUpdate = true;
   contextLost = false;
+  lastFrame = 0;
+  adaptiveQuality.reset();
   needsDraw = true;
   canvas.style.visibility = '';
 });
@@ -182,30 +189,9 @@ document.querySelector('#reset').addEventListener('click', () => {
   needsDraw = true;
 });
 
-canvas.addEventListener('keydown', event => {
-  if (!controls || !camera) return;
-  if (event.key === 'Home') { event.preventDefault(); controls.reset(); return; }
-  const keys = ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', '+', '=', '-', '_'];
-  if (!keys.includes(event.key)) return;
-  event.preventDefault();
-  const offset = camera.position.clone().sub(controls.target);
-  const spherical = new THREE.Spherical().setFromVector3(offset);
-  if (event.key === 'ArrowLeft') spherical.theta += .08;
-  if (event.key === 'ArrowRight') spherical.theta -= .08;
-  if (event.key === 'ArrowUp') spherical.phi -= .06;
-  if (event.key === 'ArrowDown') spherical.phi += .06;
-  if (event.key === '+' || event.key === '=') spherical.radius *= .92;
-  if (event.key === '-' || event.key === '_') spherical.radius /= .92;
-  spherical.phi = THREE.MathUtils.clamp(spherical.phi, controls.minPolarAngle, controls.maxPolarAngle);
-  spherical.radius = THREE.MathUtils.clamp(spherical.radius, controls.minDistance, controls.maxDistance);
-  camera.position.copy(controls.target).add(offset.setFromSpherical(spherical));
-  controls.update();
-  needsDraw = true;
-});
-
 function updatePause() {
   const button = document.querySelector('#pause');
-  button.setAttribute('aria-label', paused ? '물결 재생' : '물결 일시정지');
+  button.setAttribute('aria-label', paused ? '장면 재생' : '장면 일시정지');
   button.title = paused ? '재생' : '일시정지';
   document.querySelector('#pause-path').setAttribute('d', paused ? 'm8 5 11 7-11 7Z' : 'M9 5v14M15 5v14');
 }
@@ -218,14 +204,35 @@ updatePause();
 
 document.querySelector('#quality').addEventListener('change', event => {
   quality = event.target.value;
+  adaptiveQuality.reset();
   resize();
+});
+
+function setMotion(value) {
+  motion = value === 'natural' ? 'natural' : 'calm';
+  ocean?.userData.setMotion(motion);
+  if (caustics) caustics.receiverUniforms.causticsStrength.value = motion === 'calm' ? .30 : .58;
+  needsDraw = true;
+}
+document.querySelector('#motion').addEventListener('change', event => setMotion(event.target.value));
+reducedMotion.addEventListener('change', event => {
+  controls?.setReducedMotion(event.matches);
+  if (event.matches) {
+    paused = true;
+    setMotion('calm');
+    document.querySelector('#motion').value = motion;
+  }
+  needsDraw = true;
+  updatePause();
 });
 
 // Reproducible local visual checks; deliberately absent on the public site.
 function installInspection() {
   window.__waterDebug = {
     snapshot: () => ({
-      time: time.value, paused, quality,
+      time: time.value, waterTime: waterTime.value, paused, motion, quality, qualityTier: adaptiveQuality.tier,
+      ecology: ecology.snapshot(), contextLost, reducedMotion: reducedMotion.matches,
+      audio: audio?.context.state ?? 'not-started', soundOn,
       viewport: [innerWidth, innerHeight], buffer: [canvas.width, canvas.height],
       frame: renderer.info.render.frame, calls: renderer.info.render.calls, triangles: renderer.info.render.triangles,
       textures: renderer.info.memory.textures, programs: renderer.info.programs.length,
@@ -235,19 +242,20 @@ function installInspection() {
       if (!Number.isFinite(value) || value < 0) return;
       paused = true;
       time.value = value;
+      waterTime.value = value * (motion === 'calm' ? .35 : .7);
       needsDraw = true;
       updatePause();
     },
     setView(radius, polar, azimuth) {
-      controls.reset();
-      camera.position.copy(controls.target).add(new THREE.Vector3().setFromSpherical(
-        new THREE.Spherical(THREE.MathUtils.clamp(radius, 6, 14), THREE.MathUtils.clamp(polar, .12, .90), azimuth),
-      ));
-      controls.update();
+      controls.setView(radius, polar, azimuth);
+      needsDraw = true;
+    },
+    setSurface(enabled) {
+      ocean.visible = Boolean(enabled);
       needsDraw = true;
     },
     setCaustics(enabled) {
-      caustics.receiverUniforms.causticsStrength.value = enabled ? caustics.strength : 0;
+      caustics.receiverUniforms.causticsStrength.value = enabled ? (motion === 'calm' ? .30 : .58) : 0;
       needsDraw = true;
     },
     loseContext: () => renderer.forceContextLoss(),
@@ -276,44 +284,13 @@ document.querySelector('#fullscreen').addEventListener('click', async () => {
   } catch { notify('전체 화면을 열 수 없어요.'); }
 });
 
-let audio, audioGain, soundOn = false;
-function createWaterAudio() {
-  audio = new (window.AudioContext || window.webkitAudioContext)();
-  audioGain = audio.createGain();
-  audioGain.gain.value = 0;
-  audioGain.connect(audio.destination);
-  const buffer = audio.createBuffer(2, audio.sampleRate * 8, audio.sampleRate);
-  for (let channel = 0; channel < 2; channel++) {
-    const data = buffer.getChannelData(channel);
-    let brown = 0;
-    for (let i = 0; i < data.length; i++) {
-      brown = (brown + Math.random() * .04 - .02) / 1.02;
-      data[i] = brown * 4;
-    }
-  }
-  const source = audio.createBufferSource();
-  source.buffer = buffer;
-  source.loop = true;
-  const filter = audio.createBiquadFilter();
-  filter.type = 'lowpass';
-  filter.frequency.value = 1100;
-  source.connect(filter);
-  filter.connect(audioGain);
-  source.start();
-  const lfo = audio.createOscillator();
-  lfo.frequency.value = .17;
-  const modulation = audio.createGain();
-  modulation.gain.value = 180;
-  lfo.connect(modulation);
-  modulation.connect(filter.frequency);
-  lfo.start();
-}
+let audio, soundOn = false;
 document.querySelector('#sound').addEventListener('click', async () => {
   try {
-    if (!audio) createWaterAudio();
-    await audio.resume();
+    if (!audio) audio = createWaterAudio();
+    await audio.context.resume();
     soundOn = !soundOn;
-    audioGain.gain.setTargetAtTime(soundOn ? .42 : 0, audio.currentTime, .5);
+    audio.setEnabled(soundOn);
     const button = document.querySelector('#sound');
     button.setAttribute('aria-pressed', String(soundOn));
     button.setAttribute('aria-label', soundOn ? '물소리 끄기' : '물소리 켜기');
@@ -322,8 +299,9 @@ document.querySelector('#sound').addEventListener('click', async () => {
 document.addEventListener('visibilitychange', () => {
   needsDraw = true;
   lastFrame = 0;
+  adaptiveQuality.reset();
   if (audio) {
-    if (document.hidden) audio.suspend();
-    else if (soundOn) audio.resume().catch(() => {});
+    if (document.hidden) audio.context.suspend().catch(() => {});
+    else if (soundOn) audio.context.resume().catch(() => {});
   }
 });

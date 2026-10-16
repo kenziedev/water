@@ -5,7 +5,7 @@ const PATCH_SIZE = 16;
 const BANDS = [
   // Quiet water keeps its broad movement without continuously bending the
   // seabed into sharp ribbons. These are RMS slopes, not wave heights.
-  [4.5, .032], [2.7, .036], [1.6, .040], [.9, .038],
+  [4.5, .026], [2.7, .030], [1.6, .036], [.9, .034],
   [.50, .030], [.26, .019], [.17, .011],
 ];
 
@@ -91,7 +91,8 @@ export function createWaveField(THREE, renderer, timeUniform, { resolution = 512
         for (int i = 0; i < ${modes.length}; i++) {
           vec4 mode = waveModes[i];
           vec2 dynamics = waveDynamics[i];
-          float phase = dot(mode.xy, p) - dynamics.x * waterTime * .78 + mode.w;
+          // The caller advances the shared clock at the chosen motion speed.
+          float phase = dot(mode.xy, p) - dynamics.x * waterTime + mode.w;
           height += mode.z * sin(phase) * dynamics.y;
           slope += mode.z * mode.xy * cos(phase);
         }
