@@ -3,16 +3,29 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { Sky } from 'three/addons/objects/Sky.js';
 import { createOcean } from './ocean.js';
 import { createSeabed } from './seabed.js';
+import { createUnderwater } from './underwater.js';
+import { createCaustics } from './caustics.js';
 
 const canvas = document.querySelector('#water');
 const notice = document.querySelector('#notice');
 const time = { value: 0 };
 // Extra rendered margins give refracted rays real scenery outside the visible
 // frame. The CSS crop and expanded FOV preserve the visible 45 degree lens.
-const overscan = 1.4;
+const overscan = 1.18;
 let paused = matchMedia('(prefers-reduced-motion: reduce)').matches;
-let renderer, camera, controls, scene, ocean, needsDraw = true, contextLost = false;
+let renderer, camera, controls, scene, ocean, underwater, caustics, needsDraw = true, contextLost = false;
 let lastFrame = 0;
+let quality = 'auto';
+const drawingSize = new THREE.Vector2();
+const localInspection = ['localhost', '127.0.0.1'].includes(location.hostname)
+  && new URLSearchParams(location.search).has('inspect');
+
+function qualitySettings() {
+  const mobile = matchMedia('(pointer: coarse)').matches;
+  if (quality === 'high') return { pixels: 5000000, dpr: 1.75, refraction: 1 };
+  if (quality === 'eco') return { pixels: 1100000, dpr: 1, refraction: .75 };
+  return { pixels: mobile ? 1400000 : 2800000, dpr: mobile ? 1.4 : 1.5, refraction: mobile ? .85 : 1 };
+}
 
 function notify(message) {
   notice.textContent = message;
@@ -25,13 +38,12 @@ async function init() {
   renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: false });
   renderer.outputColorSpace = THREE.SRGBColorSpace;
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
-  renderer.toneMappingExposure = .85;
+  renderer.toneMappingExposure = .95;
   renderer.shadowMap.enabled = true;
   renderer.shadowMap.type = THREE.PCFShadowMap;
   renderer.shadowMap.autoUpdate = false;
   renderer.shadowMap.needsUpdate = true;
-  // Refraction samples a separate rendering of the fixed seabed.
-  renderer.transmissionResolutionScale = .75;
+  renderer.info.autoReset = false;
   scene = new THREE.Scene();
   scene.background = new THREE.Color(0x82b6c5);
   camera = new THREE.PerspectiveCamera(45, 1, .1, 160);
@@ -55,7 +67,7 @@ async function init() {
   createEnvironment(sunPosition);
 
   scene.add(new THREE.HemisphereLight(0xc3e4f5, 0x6b7665, 1.1));
-  const sunlight = new THREE.DirectionalLight(0xfff4df, 1.7);
+  const sunlight = new THREE.DirectionalLight(0xfff4df, 1.5);
   sunlight.position.copy(sunPosition).multiplyScalar(22);
   sunlight.castShadow = true;
   sunlight.shadow.mapSize.set(2048, 2048);
@@ -68,12 +80,15 @@ async function init() {
   const bedTexture = await new THREE.TextureLoader().loadAsync(new URL('./assets/seabed.png', import.meta.url).href);
   bedTexture.colorSpace = THREE.SRGBColorSpace;
   bedTexture.anisotropy = Math.min(8, renderer.capabilities.getMaxAnisotropy());
-  scene.add(createSeabed(THREE, bedTexture, time));
-  ocean = createOcean(THREE, renderer, time);
+  underwater = createUnderwater(THREE, renderer);
+  ocean = createOcean(THREE, renderer, time, underwater.uniforms);
+  caustics = createCaustics(THREE, renderer, ocean.userData.waveField, time, sunPosition);
+  scene.add(createSeabed(THREE, bedTexture, time, caustics));
   ocean.material.envMap = environment.texture;
   scene.add(ocean);
   resize();
   renderer.compile(scene, camera);
+  if (localInspection) installInspection();
   renderer.setAnimationLoop(frame);
 }
 
@@ -107,7 +122,10 @@ function createEnvironment(sunPosition = new THREE.Vector3(-.45, .78, -.43).norm
 function resize() {
   if (!renderer || !camera) return;
   const width = Math.ceil(innerWidth * overscan), height = Math.ceil(innerHeight * overscan);
-  const ratio = Math.min(devicePixelRatio || 1, 1.5, Math.sqrt(2300000 / (width * height)));
+  const settings = qualitySettings();
+  // Budget visible pixels, not the cropped-off guard band. A 1080p desktop
+  // therefore keeps native detail while retina/mobile have bounded costs.
+  const ratio = Math.min(devicePixelRatio || 1, settings.dpr, Math.sqrt(settings.pixels / (innerWidth * innerHeight)));
   renderer.setPixelRatio(ratio);
   renderer.setSize(width, height, false);
   canvas.style.width = `${overscan * 100}vw`;
@@ -116,6 +134,8 @@ function resize() {
   const halfVisibleFov = Math.atan(Math.tan(THREE.MathUtils.degToRad(45 / 2)) * Math.min(1, 2.35 / camera.aspect));
   camera.fov = THREE.MathUtils.radToDeg(2 * Math.atan(Math.tan(halfVisibleFov) * overscan));
   camera.updateProjectionMatrix();
+  renderer.getDrawingBufferSize(drawingSize);
+  underwater?.resize(drawingSize.x, drawingSize.y, settings.refraction);
   needsDraw = true;
 }
 
@@ -126,9 +146,12 @@ function frame(now) {
   controls.update();
   if (paused && !needsDraw) return;
   if (!paused) time.value += dt;
+  renderer.info.reset();
   // Compute the spectrum once on a small GPU surface, then sample it from
   // both the displaced mesh and optical shading at every viewing angle.
   ocean.userData.updateWaves();
+  caustics.update();
+  underwater.render(scene, camera, ocean);
   renderer.render(scene, camera);
   needsDraw = false;
 }
@@ -146,6 +169,8 @@ canvas.addEventListener('webglcontextlost', event => {
 });
 canvas.addEventListener('webglcontextrestored', () => {
   createEnvironment();
+  ocean?.userData.waveField.invalidate();
+  caustics?.invalidate();
   renderer.shadowMap.needsUpdate = true;
   contextLost = false;
   needsDraw = true;
@@ -190,6 +215,45 @@ document.querySelector('#pause').addEventListener('click', () => {
   updatePause();
 });
 updatePause();
+
+document.querySelector('#quality').addEventListener('change', event => {
+  quality = event.target.value;
+  resize();
+});
+
+// Reproducible local visual checks; deliberately absent on the public site.
+function installInspection() {
+  window.__waterDebug = {
+    snapshot: () => ({
+      time: time.value, paused, quality,
+      viewport: [innerWidth, innerHeight], buffer: [canvas.width, canvas.height],
+      frame: renderer.info.render.frame, calls: renderer.info.render.calls, triangles: renderer.info.render.triangles,
+      textures: renderer.info.memory.textures, programs: renderer.info.programs.length,
+      camera: camera.position.toArray(), target: controls.target.toArray(),
+    }),
+    setTime(value) {
+      if (!Number.isFinite(value) || value < 0) return;
+      paused = true;
+      time.value = value;
+      needsDraw = true;
+      updatePause();
+    },
+    setView(radius, polar, azimuth) {
+      controls.reset();
+      camera.position.copy(controls.target).add(new THREE.Vector3().setFromSpherical(
+        new THREE.Spherical(THREE.MathUtils.clamp(radius, 6, 14), THREE.MathUtils.clamp(polar, .12, .90), azimuth),
+      ));
+      controls.update();
+      needsDraw = true;
+    },
+    setCaustics(enabled) {
+      caustics.receiverUniforms.causticsStrength.value = enabled ? caustics.strength : 0;
+      needsDraw = true;
+    },
+    loseContext: () => renderer.forceContextLoss(),
+    restoreContext: () => renderer.forceContextRestore(),
+  };
+}
 
 let idleTimer;
 function showControls() {
