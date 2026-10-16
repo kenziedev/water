@@ -3,3 +3,7 @@
 #water{touch-action:none;cursor:grab}#water:active{cursor:grabbing}
 
 #water{inset:auto;left:50%;top:50%;transform:translate(-50%,-50%)}
+
+.controls select{height:40px;max-width:88px;align-self:center;border:1px solid #ffffff24;border-radius:20px;padding:0 10px;background:#082f3080;color:#eeeee4;font:inherit;font-size:12px;cursor:pointer}.controls select:focus-visible{outline:2px solid #fff;outline-offset:4px}@media(pointer:coarse){.controls button{width:44px;height:44px}.controls select{height:44px}}
+
+@media(max-width:440px){.controls{right:max(12px,env(safe-area-inset-right));bottom:max(16px,env(safe-area-inset-bottom));gap:4px;max-width:calc(100vw - 24px);flex-wrap:wrap;justify-content:flex-end}.controls select{padding:0 8px;max-width:88px}.controls button{width:40px;height:40px}.controls select{height:40px}}

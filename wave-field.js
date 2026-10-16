@@ -3,8 +3,10 @@
 const TAU = Math.PI * 2;
 const PATCH_SIZE = 16;
 const BANDS = [
-  [4.5, .045], [2.7, .060], [1.6, .080], [.9, .100],
-  [.50, .100], [.26, .075], [.17, .045],
+  // Quiet water keeps its broad movement without continuously bending the
+  // seabed into sharp ribbons. These are RMS slopes, not wave heights.
+  [4.5, .026], [2.7, .030], [1.6, .036], [.9, .034],
+  [.50, .030], [.26, .019], [.17, .011],
 ];
 
 export function createWaveSpectrum() {
@@ -21,7 +23,12 @@ export function createWaveSpectrum() {
     while (members.length < 6) {
       const length = centralLength * (.82 + random() * .36);
       const windAngle = .42;
-      const spread = random() < .75 ? (random() + random() - 1) * 1.15 : (random() - .5) * Math.PI * 2;
+      // Long waves share a gentle wind direction. Small ripples cross it from
+      // more directions, avoiding coherent parallel bands of bright normals.
+      const directionalShare = band < 2 ? .75 : .48;
+      const spread = random() < directionalShare
+        ? (random() + random() - 1) * (band < 2 ? 1.15 : 1.8)
+        : (random() - .5) * Math.PI * 2;
       const direction = windAngle + spread;
       const nx = Math.round(PATCH_SIZE / length * Math.cos(direction));
       const nz = Math.round(PATCH_SIZE / length * Math.sin(direction));
@@ -48,9 +55,9 @@ export function createWaveSpectrum() {
   return { patchSize: PATCH_SIZE, modes };
 }
 
-export function createWaveField(THREE, renderer, timeUniform) {
+export function createWaveField(THREE, renderer, timeUniform, { resolution = 512 } = {}) {
   const { patchSize, modes } = createWaveSpectrum();
-  const target = new THREE.WebGLRenderTarget(512, 512, {
+  const target = new THREE.WebGLRenderTarget(resolution, resolution, {
     type: THREE.HalfFloatType,
     minFilter: THREE.LinearMipmapLinearFilter,
     magFilter: THREE.LinearFilter,
@@ -84,7 +91,8 @@ export function createWaveField(THREE, renderer, timeUniform) {
         for (int i = 0; i < ${modes.length}; i++) {
           vec4 mode = waveModes[i];
           vec2 dynamics = waveDynamics[i];
-          float phase = dot(mode.xy, p) - dynamics.x * waterTime * .86 + mode.w;
+          // The caller advances the shared clock at the chosen motion speed.
+          float phase = dot(mode.xy, p) - dynamics.x * waterTime + mode.w;
           height += mode.z * sin(phase) * dynamics.y;
           slope += mode.z * mode.xy * cos(phase);
         }
@@ -99,14 +107,33 @@ export function createWaveField(THREE, renderer, timeUniform) {
   const scene = new THREE.Scene();
   scene.add(quad);
   const camera = new THREE.Camera();
+  let lastTime = NaN;
   return {
     texture: target.texture,
     patchSize,
+    resolution,
     update() {
+      // Camera movement while paused does not change this world-space field.
+      if (lastTime === timeUniform.value) return false;
       const previous = renderer.getRenderTarget();
-      renderer.setRenderTarget(target);
-      renderer.render(scene, camera);
-      renderer.setRenderTarget(previous);
+      const cubeFace = renderer.getActiveCubeFace();
+      const mipLevel = renderer.getActiveMipmapLevel();
+      try {
+        renderer.setRenderTarget(target);
+        renderer.render(scene, camera);
+        lastTime = timeUniform.value;
+      } finally {
+        renderer.setRenderTarget(previous, cubeFace, mipLevel);
+      }
+      return true;
+    },
+    invalidate() {
+      lastTime = NaN;
+    },
+    dispose() {
+      target.dispose();
+      material.dispose();
+      quad.geometry.dispose();
     },
   };
 }

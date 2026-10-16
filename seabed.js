@@ -1,6 +1,6 @@
 // A fixed, three-dimensional limestone bed. The water above it supplies all
 // motion and underwater colour; no rock vertices or texture coordinates move.
-export function createSeabed(THREE, bedTexture, timeUniform) {
+export function createSeabed(THREE, bedTexture, timeUniform, caustics = null) {
   const group = new THREE.Group();
   group.name = 'Mediterranean seabed';
   const random = seededRandom(0x51a7c0a5);
@@ -16,8 +16,9 @@ export function createSeabed(THREE, bedTexture, timeUniform) {
 
   const groundMap = prepareMap(THREE, bedTexture, 6.2);
   const rockMap = prepareMap(THREE, bedTexture, 2.1);
-  const groundMaterial = stoneMaterial(THREE, groundMap, .72, 1.28);
-  const rockMaterial = stoneMaterial(THREE, rockMap, .85, 1.65, true);
+  const causticsUniforms = caustics?.receiverUniforms ?? null;
+  const groundMaterial = stoneMaterial(THREE, groundMap, .72, 1.28, false, causticsUniforms);
+  const rockMaterial = stoneMaterial(THREE, rockMap, .85, 1.65, true, causticsUniforms);
 
   const groundGeometry = new THREE.PlaneGeometry(128, 128, 160, 160);
   groundGeometry.rotateX(-Math.PI / 2);
@@ -73,6 +74,16 @@ export function createSeabed(THREE, bedTexture, timeUniform) {
   }
 
   const transform = new THREE.Object3D();
+  const rockObstacles = [], pebbleObstacles = [];
+  const recordObstacle = (geometry, destination) => {
+    if (!geometry.boundingBox) geometry.computeBoundingBox();
+    const bounds = geometry.boundingBox.clone().applyMatrix4(transform.matrix);
+    destination.push(Object.freeze({
+      minX: bounds.min.x, maxX: bounds.max.x,
+      minY: bounds.min.y, maxY: bounds.max.y,
+      minZ: bounds.min.z, maxZ: bounds.max.z,
+    }));
+  };
   const stoneColor = new THREE.Color();
   const warmStone = new THREE.Color('#dbd5c3');
   const coolStone = new THREE.Color('#a5b1ac');
@@ -90,6 +101,7 @@ export function createSeabed(THREE, bedTexture, timeUniform) {
       transform.scale.set(stone.sx, stone.sy, stone.sz);
       transform.updateMatrix();
       instances.setMatrixAt(index, transform.matrix);
+      recordObstacle(geometry, rockObstacles);
       stoneColor.copy(warmStone).lerp(coolStone, random() * .72);
       stoneColor.multiplyScalar(.87 + random() * .19);
       instances.setColorAt(index, stoneColor);
@@ -118,6 +130,7 @@ export function createSeabed(THREE, bedTexture, timeUniform) {
     transform.scale.set(size * (1 + random() * .7), size * (.4 + random() * .4), size);
     transform.updateMatrix();
     rubble.setMatrixAt(index, transform.matrix);
+    recordObstacle(rubble.geometry, pebbleObstacles);
     stoneColor.copy(warmStone).lerp(coolStone, random() * .85);
     stoneColor.multiplyScalar(.8 + random() * .25);
     rubble.setColorAt(index, stoneColor);
@@ -130,8 +143,17 @@ export function createSeabed(THREE, bedTexture, timeUniform) {
   group.userData.rockCount = stones.length;
   group.userData.pebbleCount = rubbleCount;
   group.userData.groundHeight = groundHeight;
-  // timeUniform is intentionally unused: it belongs to the moving water, not
-  // this static bed. Keep the argument for the shared scene construction API.
+  // Conservative bounds of the actual transformed geometry, used by rooted
+  // vegetation and swimming routes without changing the static seabed.
+  group.userData.rockObstacles = Object.freeze(rockObstacles);
+  group.userData.pebbleObstacles = Object.freeze(pebbleObstacles);
+  group.userData.setCaustics = nextCaustics => {
+    const uniforms = nextCaustics?.receiverUniforms ?? null;
+    groundMaterial.userData.setCaustics(uniforms);
+    rockMaterial.userData.setCaustics(uniforms);
+  };
+  // The shared caustic field carries moving sunlight. Neither the bed geometry
+  // nor its colour textures use time; keep the argument for the scene API.
   return group;
 }
 
@@ -145,7 +167,7 @@ function prepareMap(THREE, source, repeat) {
   return map;
 }
 
-function stoneMaterial(THREE, map, neutralize, exposure, detailOnly = false) {
+function stoneMaterial(THREE, map, neutralize, exposure, detailOnly = false, causticsUniforms = null) {
   const material = new THREE.MeshStandardMaterial({
     color: 0xffffff,
     map,
@@ -154,10 +176,17 @@ function stoneMaterial(THREE, map, neutralize, exposure, detailOnly = false) {
     envMapIntensity: .16,
     vertexColors: true,
   });
+  let causticsRevision = 0;
+  material.userData.setCaustics = uniforms => {
+    if (causticsUniforms === uniforms) return;
+    causticsUniforms = uniforms;
+    causticsRevision++;
+    material.needsUpdate = true;
+  };
   {
     // The source photograph already contains blue underwater absorption.
     // Recover neutral limestone detail before the real water applies it again.
-    // This affects colour only; it has no time input or moving lighting bands.
+    // This affects fixed colour only. Caustics modulate direct lighting below.
     material.onBeforeCompile = shader => {
       shader.vertexShader = 'varying vec3 mineralPosition;\n' + shader.vertexShader;
       shader.vertexShader = shader.vertexShader.replace(
@@ -227,8 +256,38 @@ function stoneMaterial(THREE, map, neutralize, exposure, detailOnly = false) {
          vec3 grainGradient = sign(grainDet) * (grainSlope.x * grainR1 + grainSlope.y * grainR2);
          normal = normalize(abs(grainDet) * normal - grainGradient);`,
       );
+      if (causticsUniforms) {
+        Object.assign(shader.uniforms, causticsUniforms);
+        shader.fragmentShader = `
+          uniform sampler2D causticsMap;
+          uniform float causticsPatchSize;
+          uniform float causticsStrength;
+          uniform float causticsReferenceDepth;
+          uniform vec2 causticsRayOffset;
+        ` + shader.fragmentShader;
+        shader.fragmentShader = shader.fragmentShader.replace(
+          '#include <lights_fragment_end>',
+          `#include <lights_fragment_end>
+           // Project onto the field's receiver plane along the refracted sun
+           // ray, so different rock heights share one coherent light pattern.
+           vec2 causticsUv = (mineralPosition.xz
+             + causticsRayOffset * (mineralPosition.y + causticsReferenceDepth))
+             / causticsPatchSize;
+           float causticsDepth = -mineralPosition.y;
+           vec3 causticsWorldNormal = inverseTransformDirection(normal, viewMatrix);
+           float causticsFacing = smoothstep(.08, .78, causticsWorldNormal.y);
+           float causticsDepthFade = smoothstep(.10, .50, causticsDepth)
+             * (1.0 - smoothstep(3.0, 9.0, causticsDepth));
+           float causticsFocus = clamp(texture2D(causticsMap, causticsUv).r, .65, 1.55);
+           float causticsWeight = clamp(causticsStrength, 0.0, 1.0)
+             * causticsFacing * causticsDepthFade;
+           // Direct diffuse already contains the sun's shadow visibility.
+           // Keep occluded faces and ambient light free of luminous overlays.
+           reflectedLight.directDiffuse *= mix(1.0, causticsFocus, causticsWeight);`,
+        );
+      }
     };
-    material.customProgramCacheKey = () => `static-fractured-limestone-v4-${neutralize}-${exposure}-${detailOnly}`;
+    material.customProgramCacheKey = () => `static-fractured-limestone-v5-${neutralize}-${exposure}-${detailOnly}-${Boolean(causticsUniforms)}-${causticsRevision}`;
   }
   return material;
 }
